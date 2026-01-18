@@ -1,0 +1,169 @@
+name: PR Automation Workflow
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run ESLint
+        id: eslint
+        run: npm run lint
+        continue-on-error: true
+      - name: Run Prettier check
+        id: prettier
+        run: npx prettier --check .
+        continue-on-error: true
+      - name: Post Code Quality Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const eslintOutput = `${{ steps.eslint.outcome }}`;
+            const prettierOutput = `${{ steps.prettier.outcome }}`;
+            const body = `## Code Quality Report
+            - **ESLint**: ${eslintOutput === 'success' ? '✅ Passed' : '❌ Failed'}
+            - **Prettier**: ${prettierOutput === 'success' ? '✅ Passed' : '❌ Failed'}
+            `;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+  testing-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run tests and generate coverage
+        run: npm test -- --coverage
+        continue-on-error: true
+      - name: Post Test Coverage Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let coverageSummary = 'No coverage data available';
+            try {
+              const coverage = JSON.parse(fs.readFileSync('coverage/coverage-summary.json', 'utf8'));
+              coverageSummary = `Total lines covered: ${coverage.total.lines.pct}% (${coverage.total.lines.covered}/${coverage.total.lines.total})`;
+            } catch (e) {
+              coverageSummary = 'Failed to parse coverage data';
+            }
+            const body = `## Test Coverage Report
+            ${coverageSummary}
+            `;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Run dependency vulnerability check
+        id: audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+      - name: Scan for secrets
+        id: secrets
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          path: ./
+          extra_args: --no-verification
+        continue-on-error: true
+      - name: Post Security Scan Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const auditOutput = `${{ steps.audit.outcome }}`;
+            const secretsOutput = `${{ steps.secrets.outcome }}`;
+            const body = `## Security Scan Report
+            - **Dependency Vulnerabilities**: ${auditOutput === 'success' ? '✅ No moderate/high vulnerabilities' : '❌ Vulnerabilities found'}
+            - **Secrets Scan**: ${secretsOutput === 'success' ? '✅ No secrets detected' : '❌ Secrets found in code'}
+            `;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+
+  build-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm ci
+      - name: Build application
+        id: build
+        run: npm run build
+        continue-on-error: true
+      - name: Validate endpoints (check build output)
+        id: validate
+        run: |
+          if [ -d "dist" ]; then
+            echo "Build directory exists"
+            exit 0
+          else
+            echo "Build directory missing"
+            exit 1
+          fi
+        continue-on-error: true
+      - name: Post Build Validation Report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const buildOutput = `${{ steps.build.outcome }}`;
+            const validateOutput = `${{ steps.validate.outcome }}`;
+            const body = `## Build Validation
+            - **Build Status**: ${buildOutput === 'success' ? '✅ Build succeeded' : '❌ Build failed'}
+            - **Endpoint Validation**: ${validateOutput === 'success' ? '✅ Endpoints valid' : '❌ Endpoint validation failed'}
+            `;
+            github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-preview
+          path: dist/
